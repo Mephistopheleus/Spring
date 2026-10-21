@@ -1,0 +1,70 @@
+ОТЧЁТ ЖИВОГО ПРОБНИКА МАТРИЦЫ
+прогон 177 с, начало 2026-10-20 13:03:53 UTC
+
+--- ПРОВЕРКИ ---
+[PASS] Сборщик: полотно колец непусто               12 колец
+[PASS] Линзы: вход сделок идёт                      +137 сделок
+[PASS] OI+Каскад: опросы REST идут                  +5 опросов
+[PASS] Доход карточек до шины (CARD)                CARD=931
+[PASS] Слой DRAFT→CARD                              
+[PASS] Слой CARD→матрица                            
+[PASS] Матрица: свежие ячейки                       754 из 754
+[PASS] Линзы в матрице (SURFACE→ячейки lens)        осей 31
+[PASS] Нить lineage (ячейка→журнал)                 713/723
+[PASS] Кольцо 5m vs klines биржи                    10/10, не доехало 0
+[PASS] Синтез 15m из колец 5m                       9/9
+[PASS] Линза 60s: slope vs факт                     дельта 0.02381
+[PASS] Линза 300s: slope vs факт                    дельта 0.00857
+[PASS] Линза 900s: slope vs факт                    дельта 0.00563
+[PASS] OI Каскад vs биржа (<=1%)                    0.00%
+[WARN] Постфактум вердиктов                         ни одного вердикта за прогон
+
+ИТОГ: проверок 16, из них FAIL 0
+
+--- ЖУРНАЛ ОБМЕНА (карточки журнала) ---
+карточки печатаются в logs/neiros.log и в консоли прогона (_probe.log)
+--- 1. ПОЛУЧЕНИЕ (вход модулей) ---
+Сборщик: минутных баров 10349 (за прогон ++10349), колец старших 12, пустых 0 
+  health_note: ПОВЕРХНОСТЬ: все 12 биржевых колец живые (минут 10349, синтез старших 12); ПОТЕРИ ОКОН: 180s:2,300s:2,900s:3,1800s:3,3600s:3,7200s:3,14400s:3,21600s:3,28800s:2,43200s:3,86400s:2,259200s:1
+Линзы: сделок 137 (за прогон ++137), публикаций SURFACE на шине 119
+OI+Каскад: опросов OI 5 (++5), полок на часу 2, вердиктов 0 (++0), лавин 0, последний OI 2.738e+09
+
+--- 2. АНАЛИЗ (публикации на шине) ---
+Конвертов: card=931, conductivity=71, draft=931, matrix=78, surface=119
+Виды DRAFT: trend-vector=387, stop-cluster=181, trend-forecast=110, g-trend=86, fvg-zone=68, sr-zone=35, conductivity=28, picture=8, entropy-state=6, leader-correlation=6, meta-corr=5, spring-state=4, tte-state=2, topological-resonance=2, flow-state=2, absorption-barrier=1
+Виды CARD:  trend-vector=387, stop-cluster=181, trend-forecast=110, g-trend=86, fvg-zone=68, sr-zone=35, conductivity=28, picture=8, entropy-state=6, leader-correlation=6, meta-corr=5, spring-state=4, tte-state=2, topological-resonance=2, flow-state=2, absorption-barrier=1
+
+--- 3. МАТРИЦА (срез настоящего) ---
+Ячеек 754 (всего поглощений за жизнь 16409), свежих (<10 мин) 754, со seq 723
+  absorption-barrier     осей   7, со seq 7
+  conductivity           осей   9, со seq 9
+  entropy-state          осей   4, со seq 4
+  flow-state             осей  10, со seq 10
+  fvg-zone               осей 104, со seq 104
+  g-trend                осей  65, со seq 65
+  leader-correlation     осей   7, со seq 7
+  lens                   осей  31, со seq 0
+  meta-corr              осей  37, со seq 37
+  news-sentiment         осей   9, со seq 9
+  picture                осей   7, со seq 7
+  spring-state           осей   8, со seq 8
+  sr-zone                осей   5, со seq 5
+  stop-cluster           осей  91, со seq 91
+  topological-resonance  осей 113, со seq 113
+  trend-forecast         осей  78, со seq 78
+  trend-vector           осей 166, со seq 166
+  tte-state              осей   3, со seq 3
+Обрыв DRAFT→CARD: нет
+Обрыв CARD→матрица: нет
+Нить lineage: ячеек со seq 723, найдено в журнале 713 (из последних 2000 карточек), из них с lineage 713
+
+--- 4. ЭТАЛОН БИРЖИ (REST: 3 запроса, веса 1+1+5; OI — боевой OI_REST Каскада) ---
+Кольцо 5m vs биржа: сверено 10 закрытых баров, совпало 10, OHLC-расхождений 0 , ещё не в кольце 0
+Синтез 15m из колец 5m: сверено окон 9, совпало 9, расхождений 0 
+Линза 60s: slope +0.02381/мин, факт +0.00000/мин, дельта 0.02381, допуск 3σ-окна 0.15115 → PASS
+Линза 300s: slope -0.00857/мин, факт +0.00000/мин, дельта 0.00857, допуск 3σ-окна 0.17860 → PASS
+Линза 900s: slope -0.00563/мин, факт +0.00000/мин, дельта 0.00563, допуск 3σ-окна 0.19757 → PASS
+OI: Каскад 2738020251, биржа 2737988891 контрактов, разница 0.00%
+
+--- 5. ПОСТФАКТУМ (вердикты Каскада против цены) ---
+Вердиктов level-verdict за прогон не было

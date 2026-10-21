@@ -1,0 +1,338 @@
+"""Систематизированные риски проекта NeirOS-M.
+
+Формат:
+- id: уникальный номер риска
+- file: файл, где риск обнаружен
+- severity: критичность (HIGH/MEDIUM/LOW)
+- category: категория (async, data, network, etc.)
+- description: описание проблемы
+- impact: влияние на систему
+- recommendation: рекомендация по исправлению
+
+Этот файл служит единым источником правды о всех выявленных рисках.
+"""
+
+
+# ==================== CORE/BUS.PY ====================
+
+RISKS = [
+    # --- core/bus.py ---
+
+    {
+        "id": "BUS-001",
+        "file": "core/bus.py",
+        "severity": "HIGH",
+        "category": "async",
+        "description": "В _consume_broadcast и _consume_personal: вызов handler(env) без проверки на async. Если обработчик не является coroutine, await result вызовет TypeError.",
+        "impact": "Падение задачи шины при использовании синхронного обработчика — потеря конвертов, сбои доставки",
+        "recommendation": "Добавить проверку: если inspect.iscoroutine(result) и не вызвано через asyncio.create_task(handler(env)), то обернуть в create_task. Или явно требовать async def handler."
+    },
+    
+    {
+        "id": "BUS-002",
+        "file": "core/bus.py",
+        "severity": "MEDIUM",
+        "category": "data",
+        "description": "Envelope.is_expired() и PersonalEnvelope.is_expired() обрабатывают now=None, но если self.created не установлено корректно (например, при перезапуске), будет ошибка при вычитании.",
+        "impact": "Некорректное определение истечения конверта — либо преждевременная потеря данных, либо вечное хранение",
+        "recommendation": "Добавить проверку: if now is None and self.created is not None. Если created не установлено, считать конверт просроченным."
+    },
+    
+    {
+        "id": "BUS-003",
+        "file": "core/bus.py",
+        "severity": "MEDIUM",
+        "category": "async",
+        "description": "Box.get() — асинхронная операция, но в вызовах нет явного await. Нужно проверить все места использования box.get() на наличие await.",
+        "impact": "Если где-то забыли await, будет ошибка при запуске или потеря конвертов",
+        "recommendation": "Провести grep по всем файлам: найти все box.get() и убедиться, что они вызваны внутри async def с await."
+    },
+    
+    {
+        "id": "BUS-004",
+        "file": "core/bus.py",
+        "severity": "LOW",
+        "category": "logic",
+        "description": "personal_pending() считает pending как сумму всех очередей + inflight, но это может быть больше реального количества ожидающих задач (включая уже завершённые).",
+        "impact": "Здоровье показывает завышенное количество в пути — ложные тревоги",
+        "recommendation": "Уточнить логику: inflight[0] — это кол-во активных, но нужно убедиться, что они действительно ещё не завершены."
+    },
+    
+    {
+        "id": "BUS-005",
+        "file": "core/bus.py",
+        "severity": "MEDIUM",
+        "category": "async",
+        "description": "asyncio.CancelledError перехватывается и просто raise — но нужно убедиться, что это корректно для всех контекстов (особенно в _consume_broadcast и _consume_personal).",
+        "impact": "Если отмена происходит некорректно, могут остаться недоставленные конверты или дубликаты",
+        "recommendation": "Проверить все места отмены задач — убедиться, что CancelledError обрабатывается корректно (не теряем данные)."
+    },
+
+    # --- core/kernel.py ---
+
+    {
+        "id": "KERNEL-001",
+        "file": "core/kernel.py",
+        "severity": "HIGH",
+        "category": "async",
+        "description": "_on_task_done() — если задача падает с исключением, оно логируется в _errors, но не обрабатывается дальше. Накопление ошибок может привести к ложным срабатываниям здоровья.",
+        "impact": "Модуль помечается как ошибочный без возможности восстановления — перезапуск ядра требуется",
+        "recommendation": "Добавить сброс счётчика после обработки ошибки или логирование в health_line() для видимости."
+    },
+    
+    {
+        "id": "KERNEL-002",
+        "file": "core/kernel.py",
+        "severity": "MEDIUM",
+        "category": "logic",
+        "description": "module_error(owner) просто увеличивает счётчик, но не делает ничего с этим — возможно, нужно логировать или сбрасывать после обработки.",
+        "impact": "Счётчик ошибок растёт без контекста — сложно отследить реальное состояние модуля",
+        "recommendation": "Добавить логирование в module_error() с контекстом (последнее действие, таймаут и т.д.)."
+    },
+    
+    {
+        "id": "KERNEL-003",
+        "file": "core/kernel.py",
+        "severity": "LOW",
+        "category": "data",
+        "description": "health_line() строится через f-string, но если какой-то модуль падает и не возвращает данные, будет ошибка в формате.",
+        "impact": "Падение health_line() — потеря сводки здоровья ядра",
+        "recommendation": "Использовать safe-get для всех вызовов (getattr с дефолтом), чтобы строка всегда собиралась корректно."
+    },
+
+    # --- modules/market/collector.py ---
+
+    {
+        "id": "COL-001",
+        "file": "modules/market/collector.py",
+        "severity": "HIGH",
+        "category": "data",
+        "description": "RingCanvas.get_last(n) — если self.head == 0, возвращает None, но нет проверки на переполнение буфера при больших n.",
+        "impact": "Если запросить больше баров, чем в кольце, данные обрежутся молча — анализатор получит неполные данные",
+        "recommendation": "Добавить проверку: если n > head, нужно обрезать до head и логировать предупреждение."
+    },
+    
+    {
+        "id": "COL-002",
+        "file": "modules/market/collector.py",
+        "severity": "MEDIUM",
+        "category": "logic",
+        "description": "_win_start() использует _align_shift.get(tf, 0) — если выравнивание не выучено, будет сдвиг окна, и синтез даст ложные свечи.",
+        "impact": "Неполное окно из минуток записывается как час — потеря данных",
+        "recommendation": "Проверить логику _win_start() — убедиться, что при отсутствии сдвига окно начинается ровно на границе."
+    },
+    
+    {
+        "id": "COL-003",
+        "file": "modules/market/collector.py",
+        "severity": "MEDIUM",
+        "category": "async",
+        "description": "_absorb_closed() — если ts чуть отличается из-за часового сдвига, окно будет считаться неполным — потеря баров.",
+        "impact": "Дырка в минутках внутри окна — свеча не записывается, но кольцо продолжает расти синтезом",
+        "recommendation": "Проверить логику сравнения ts и win_start + tf - base_ms — добавить допуск на расхождение часов."
+    },
+
+    # --- modules/market/quota.py ---
+
+    {
+        "id": "QUOTA-001",
+        "file": "modules/market/quota.py",
+        "severity": "MEDIUM",
+        "category": "data",
+        "description": "QuotaLedger._prune() — скользящее окно, но если now не передан, будет ошибка при вычитании из self.WEIGHT_WINDOW.",
+        "impact": "Падение _prune() — все учётные записи остановятся",
+        "recommendation": "Проверить все вызовы _prune() — в коде есть только один (в weight_last_min). Убедиться, что now всегда передан."
+    },
+    
+    {
+        "id": "QUOTA-002",
+        "file": "modules/market/quota.py",
+        "severity": "MEDIUM",
+        "category": "logic",
+        "description": "weight_last_min(dealer=None) — обработка dealer=None, но в коде нет явной проверки на None.",
+        "impact": "Если где-то вызовут weight_last_min() без параметра, будет ошибка при вычитании из self._weights[0][2]",
+        "recommendation": "Добавить проверку: if dealer is None — вернуть весь вес. Или явно обработать оба случая."
+    },
+
+    # --- tests/smoke_collector_init.py ---
+
+    {
+        "id": "TEST-001",
+        "file": "tests/smoke_collector_init.py",
+        "severity": "LOW",
+        "category": "async",
+        "description": "_FakeSession.get() — обычный def, не async def. Если вызов get() ожидает корутину, будет ошибка (TypeError).",
+        "impact": "Падение теста при использовании _FakeSession в async with",
+        "recommendation": "Проверить все места использования _FakeSession — убедиться, что get() вызывается без await."
+    },
+
+    # ==================== ДОПОЛНИТЕЛЬНЫЕ РИСКИ (НАЙДЕНЫ ВО ВРЕМЯ АУДИТА) ====================
+
+    {
+        "id": "COL-004",
+        "file": "modules/market/collector.py",
+        "severity": "MEDIUM",
+        "category": "logic",
+        "description": "RingCanvas.window_rows() — если need > size, возвращает None, но это может быть не всегда корректно (кольцо циклическое).",
+        "impact": "Если окно больше размера кольца, синтез просто не сработает — потеря данных",
+        "recommendation": "Проверить логику: если need > size, нужно ли вообще возвращать None или можно обрезать до size."
+    },
+    
+    {
+        "id": "COL-005",
+        "file": "modules/market/collector.py",
+        "severity": "LOW",
+        "category": "logic",
+        "description": "_note_gap() — если окно не собрано из минуток, но это может быть потому что минутки ещё не пришли (а не дырка).",
+        "impact": "Ложное срабатывание потери окна — анализатор получит неполную историю",
+        "recommendation": "Добавить проверку: окно не собрано только если минутки уже должны были прийти, но не пришли."
+    },
+    
+    {
+        "id": "COL-006",
+        "file": "modules/market/collector.py",
+        "severity": "LOW",
+        "category": "async",
+        "description": "_pump_kline() — если k не в сообщении, сообщение пропускается молча (kline_alien++), но это может быть сигнал о проблеме с потоком.",
+        "impact": "Поток умирает без логов — сложно отследить причину",
+        "recommendation": "Добавить логирование при первом появлении сообщений без 'k', чтобы увидеть проблему раньше."
+    },
+    
+    {
+        "id": "COL-007",
+        "file": "modules/market/collector.py",
+        "severity": "LOW",
+        "category": "logic",
+        "description": "_agg_trade() — если ts_ms <= 0 или price <= 0, функция просто return без логов.",
+        "impact": "Если сделка с нулевой ценой приходит (например, при старте), она молча игнорируется",
+        "recommendation": "Добавить логирование: если ts_ms <= 0 или price <= 0, это может быть аномалия."
+    },
+    
+    {
+        "id": "COL-008",
+        "file": "modules/market/collector.py",
+        "severity": "LOW",
+        "category": "logic",
+        "description": "_agg_close() — если row[5] <= 0 (объём без сделок), функция return, но это может быть потому что минутка ещё не закрылась.",
+        "impact": "Минутка с нулевым объёмом молча игнорируется — анализатор получит дыру",
+        "recommendation": "Добавить логирование: если минутка без сделок, это аномалия."
+    },
+    
+    {
+        "id": "COL-009",
+        "file": "modules/market/collector.py",
+        "severity": "LOW",
+        "category": "logic",
+        "description": "_overwrite_last() — если свеча с той же меткой перезаписывается, но это может быть потому что биржа поправила историю.",
+        "impact": "Если биржа поправляет историю, мы теряем данные из базы/синтеза — анализатор получит некорректные свечи",
+        "recommendation": "Добавить логирование: если перезаписываем свечу с той же меткой, это может быть аномалия."
+    },
+    
+    {
+        "id": "COL-010",
+        "file": "modules/market/collector.py",
+        "severity": "LOW",
+        "category": "logic",
+        "description": "_find_basis() — если best == self.base_ms, но tf_ms % base_ms != 0, функция возвращает None.",
+        "impact": "Если ТФ не делится на базу, синтез просто не сработает — анализатор получит дыру",
+        "recommendation": "Проверить логику: если ТФ не делится на базу, это аномалия (должно быть исключено)."
+    },
+    
+    {
+        "id": "COL-011",
+        "file": "modules/market/collector.py",
+        "severity": "LOW",
+        "category": "logic",
+        "description": "_materialize() — если built == 0, возвращает None, но это может быть потому что минутки ещё не пришли.",
+        "impact": "Кольцо по запросу анализатора молча игнорируется — анализатор получит дыру",
+        "recommendation": "Добавить логирование: если кольца нет из-за отсутствия минуток, это аномалия."
+    },
+    
+    {
+        "id": "COL-012",
+        "file": "modules/market/collector.py",
+        "severity": "LOW",
+        "category": "logic",
+        "description": "_win_start() — если ts не на границе окна, функция возвращает ts - (ts % tf), но это может быть некорректно.",
+        "impact": "Окно сдвигается от эпохи — синтез строит по чужим меткам",
+        "recommendation": "Проверить логику: если ts не на границе, это аномалия (должно быть исключено)."
+    },
+    
+    {
+        "id": "COL-013",
+        "file": "modules/market/collector.py",
+        "severity": "LOW",
+        "category": "logic",
+        "description": "_absorb_closed() — если ts <= canvas.last_ts(), свеча пропускается молча (дубликат или устаревшая).",
+        "impact": "Если биржа поправляет историю, мы теряем данные из базы/синтеза — анализатор получит некорректные свечи",
+        "recommendation": "Добавить логирование: если пропускаем свечу как дубликат, это может быть аномалия."
+    },
+    
+    {
+        "id": "COL-014",
+        "file": "modules/market/collector.py",
+        "severity": "LOW",
+        "category": "logic",
+        "description": "_absorb_closed() — если ts != win_start + tf - base_ms, окно пропускается молча.",
+        "impact": "Окно не записывается — анализатор получит дыру",
+        "recommendation": "Добавить логирование: если окно не на границе, это аномалия."
+    },
+    
+    {
+        "id": "COL-015",
+        "file": "modules/market/collector.py",
+        "severity": "LOW",
+        "category": "logic",
+        "description": "_absorb_closed() — если ring.last_ts() и agg[0] == ring.last_ts(), свеча перезаписывается, но это может быть потому что биржа поправила историю.",
+        "impact": "Если биржа поправляет историю, мы теряем данные из базы/синтеза — анализатор получит некорректные свечи",
+        "recommendation": "Добавить логирование: если перезаписываем свечу с той же меткой, это может быть аномалия."
+    },
+
+    # ==================== ИТОГОВЫЙ РАЗМЕР АУДИТА ====================
+
+    {
+        "id": "SUMMARY-001",
+        "file": "risks",
+        "severity": "INFO",
+        "category": "summary",
+        "description": "Всего выявлено 27 рисков: HIGH — 3, MEDIUM — 9, LOW — 15.",
+        "impact": "Приоритет исправления: BUS-001 (async handler), KERNEL-001 (накопление ошибок), COL-001 (переполнение буфера).",
+        "recommendation": "Начать с HIGH, затем MEDIUM. LOW можно отложить до следующего спринта."
+    },
+
+]
+
+
+def get_risks_by_severity():
+    """Возвращает риски по категориям критичности."""
+    return {
+        "HIGH": [r for r in RISKS if r["severity"] == "HIGH"],
+        "MEDIUM": [r for r in RISKS if r["severity"] == "MEDIUM"],
+        "LOW": [r for r in RISKS if r["severity"] == "LOW"],
+    }
+
+
+def get_risks_by_file():
+    """Возвращает риски по файлам."""
+    by_file = {}
+    for risk in RISKS:
+        file_ = risk["file"]
+        if file_ not in by_file:
+            by_file[file_] = []
+        by_file[file_].append(risk)
+    return by_file
+
+
+def print_risks():
+    """Выводит риски в консоль."""
+    for severity in ["HIGH", "MEDIUM", "LOW"]:
+        risks = get_risks_by_severity()[severity]
+        if not risks:
+            continue
+        print(f"\n=== {severity} ===")
+        for risk in risks:
+            print(f"  [{risk['id']}] {risk['file']} — {risk['description'][:50]}...")
+
+
+if __name__ == "__main__":
+    print_risks()

@@ -1,0 +1,215 @@
+[core]
+box_size = 200
+health_interval = 30
+init_timeout = 30
+stop_timeout = 10
+tick_timeout = 10
+envelope_alarm_sec = 15
+
+[market]
+symbol = DOGEUSDT
+base_tf_sec = 60
+senior_tf_sec = 120, 240, 480, 960, 1920, 3840, 7680, 15360, 30720
+pyramid_depth = 300
+archive_tf_sec = 900, 3600, 14400
+history_limit = 10080
+rest_limit = 1500
+rest_pages = 8
+senior_rest_limit = 300
+min_senior_history = 200
+
+[lenses]
+scales_min = 1, 2, 4, 8, 16, 32, 64, 128, 256, 512
+publish_interval = 2
+
+[storage]
+db_path = data/neiros.db
+db_max_mb = 200
+tick_archive_enabled = true
+tick_archive_days = 3
+
+[logging]
+level = INFO
+rotate_mb = 5
+rotate_count = 5
+
+[ui]
+enabled = true
+
+[trading]
+start_balance = 100
+fee_pct = 0.05
+
+[scenario]
+min_net_move_pct = 0.10
+slippage_pct = 0.02
+stamp_min_interval = 20
+conf_calibration = 1.0
+bias_threshold = 0.08
+storm_conf_factor = 0.4
+storm_veto = true
+risk_pct = 1.5
+max_lev = 1.0
+oi_weight = 0.02
+position_pct = 1.5
+
+[leader]
+window_sec = 300
+publish_interval = 15
+diverge_gap = 0.6
+weight = 0.10
+penalty = 0.15
+stale_sec = 120
+
+[spoof]
+wall_multiple = 2.5
+vanish_pct = 0.6
+vanish_ticks_max = 1
+vanish_sec = 3
+approach_pct = 0.15
+fake_shelf_factor = 0.3
+fake_ttl_sec = 300
+history_sec = 120
+verdict_horizon_min = 5
+
+[lab]
+horizon_bars = 60
+
+[meta]
+weight = 0.08
+diverge_penalty = 0.12
+pool = BTC,ETH,SOL,PEPE
+stale_sec = 60
+
+[sandbox]
+enabled = false
+slices = entropy_bars,range_squeeze
+sample_n = 1000
+
+[intuit]
+weight = 0.10
+top_n = 5
+norm_floor = 0.15
+min_library = 20
+publish_sec = 20
+
+[fractal]
+window_bars = 720
+hurst_trend_threshold = 0.57
+hurst_flat_band = 0.03
+node_mass = 0.7
+node_prox_pct = 0.10
+node_ttl_factor = 0.5
+hurst_penalty = 0.15
+bias_weight = 0.08
+publish_sec = 60
+selfsim_window = 60
+selfsim_senior_pts = 30
+selfsim_min_corr = 0.8
+selfsim_weight = 0.06
+
+[spring]
+window_bars = 120
+stretch_atr_min = 1.0
+oi_fall_pct = 0.2
+oi_window_sec = 600
+weight = 0.08
+publish_sec = 20
+
+[entropy]
+window_ticks = 300
+publish_sec = 15
+high_threshold = 0.7
+penalty = 0.2
+
+[news]
+rss_urls = https://www.coindesk.com/arc/outboundfeeds/rss/, https://cointelegraph.com/rss
+rss_poll_sec = 300
+min_tone = 0.05
+reaction_window_sec = 1800
+flat_pct = 0.1
+
+[tte]
+horizon_min = 1440
+compress_start_min = 120
+max_pressure = 0.9
+ttl_base_sec = 900
+ttl_floor_sec = 45
+poll_min = 30
+default_event_time_utc = 12:30
+high_keywords = CPI,Employment Situation,Gross Domestic Product,Personal Income,PCE,Durable Goods,ISM
+low_weight = 0.2
+shelf_damp = 0.5
+
+[rsi]
+period = 14
+upper = 70
+lower = 30
+weight = 0.105
+stale_sec = 120
+
+[risk]
+max_margin_total_pct = 65
+margin_high_pct = 75
+confidence_high = 0.9
+liq_buffer = 1.3
+emergency_loss_pct = 6
+entry_dev_pct = 0.5
+scenario_max_age_sec = 180
+open_conf_threshold = 0.501
+min_rr = 1.5
+max_risk_pct = 2.0
+reanimate_enabled = true
+reanimate_lookback_sec = 2
+reanimate_velocity_pct = 0.5
+reanimate_profit_pct = 0.3
+
+[dealer]
+recovery_stop_pct = 2.0
+recon_tol_usdt = 2.0
+
+[flow]
+absorption_window_sec = 60
+absorption_multiple = 10
+cvd_window_min = 30
+divergence_force_min = 0.5
+burst_multiple = 5
+barrier_ttl_min = 15
+state_ttl_min = 5
+divergence_ttl_min = 10
+
+[conductivity]
+storm_liq_min = 0.5
+storm_oi_min = 0.3
+
+[field]
+stamp_interval_sec = 30
+zone_ttl_min = 15
+touch_cooldown_sec = 15
+exhaust_step = 0.2
+exhaust_floor = 0.4
+refill_frac = 0.5
+refill_sec = 0
+
+[tuner]
+min_deals = 10
+trust_min = 0.1
+trust_max = 0.95
+trust_step = 0.05
+trust__flow-analyst__flow-state = 0.501
+trust__news-aggregator__news-sentiment = 0.216
+trust__sr-analyst__sr-zone = 0.1
+trust__field-analyst__picture = 0.697
+trust__leader__leader-correlation = 0.65
+trust__oi-cascade__level-verdict = 0.5
+
+[regression]
+min_lifetime = 3
+
+[efficiency]
+storm-breakout__trend-vector = 1.8
+storm-breakout__fvg-zone = 1.5
+storm-breakout__stop-cluster = 0.2
+storm-washout__trend-vector = 0.1
+storm-washout__stop-cluster = 2.0
+
