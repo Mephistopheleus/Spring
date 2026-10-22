@@ -129,6 +129,11 @@ class SrAnalyzer(NeirModule):
                 "author": "sr-analyst",
                 "confidence": round(b["strength"], 3),
                 "fields": {
+                    # адрес в решётке Матрицы (дыра 1): несколько живых
+                    # преград не затирают друг друга на одной полке;
+                    # mid стабильнее порядка сортировки (перетасовка
+                    # strength не меняет адрес зоны)
+                    "zone_id": "sr%.6g" % ((b["low"] + b["high"]) / 2.0),
                     "zone_low": round(b["low"], 8),
                     "zone_high": round(b["high"], 8),
                     "touches": b["touches"],

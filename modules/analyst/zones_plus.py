@@ -300,6 +300,7 @@ class ZonesPlus(NeirModule):
             "ttl_sec": self.cluster_ttl_sec,   # КОРЕНЬ: срок жизни от автора
             "fields": {
                 # ——— СРЕДА: сухая геометрия холста ———
+                "zone_id": f"cl{pkey}",        # адрес в решётке Матрицы (дыра 1)
                 "zone_low": rec["lo"],
                 "zone_high": rec["hi"],
                 "tf_sec": tf,
@@ -329,6 +330,7 @@ class ZonesPlus(NeirModule):
             "ttl_sec": self.fvg_ttl_sec,       # КОРЕНЬ: срок жизни от автора
             "fields": {
                 # ——— СРЕДА: сухая геометрия холста ———
+                "zone_id": f"fvg{round(f['born_ts'])}",  # решётка Матрицы (дыра 1)
                 "zone_low": round(f["low"], 8),
                 "zone_high": round(f["high"], 8),
                 "tf_sec": f["tf"],
