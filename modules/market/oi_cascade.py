@@ -234,6 +234,7 @@ class OiCascade(NeirModule):
             "author": "oi-cascade",
             "confidence": round(prob, 3),
             "fields": {
+                "zone_id": f"lvl{key}",       # решётка Матрицы (дыра 1)
                 "level": key,
                 "zone_low": round(w["low"], 8),
                 "zone_high": round(w["high"], 8),

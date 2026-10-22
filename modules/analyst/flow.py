@@ -194,6 +194,7 @@ class FlowAnalyst(NeirModule):
             "author": "flow-analyst",
             "confidence": conf,
             "fields": {
+                "zone_id": f"abs{round(level, 6)}",   # решётка Матрицы (дыра 1)
                 "zone_low": round(level * (1.0 - self.level_tol), 8),
                 "zone_high": round(level * (1.0 + self.level_tol), 8),
                 "absorber_side": absorber_side,
