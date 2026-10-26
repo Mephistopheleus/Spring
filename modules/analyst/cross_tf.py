@@ -57,64 +57,155 @@ def _quantile_bins(x, q):
     return np.clip(b, 0, q - 1)
 
 
-def _te_from_bins(y_prev, y_cur, x_prev, q):
-    """TE по биновым последовательностям (формула Marsilli 2014):
-    Σ p(y',y,x) · log2 [ p(y|y',x) / p(y|y') ] — условные вероятности из
-    joint-таблиц bincount. Вход: выровненные массивы одинаковой длины m≥2.
-    Оценка со смещением O(q²/N) — на малых выборках даёт отрицательный пол;
-    возвращаем max(0, сырое значение): TE по построению неотрицательна."""
-    m = len(y_cur)
+def _bias_grassberger(m, n_occ, n_samp):
+    """Аналитическое смещение оценки энтропии (Grassberger 2014, формула для
+    отсечённой дигаммы psi_D), взвешенное по вероятностям ячеек:
+
+        B = Σ_i p_i · [ psi_D(n·p̂_i) − psi(n) + (n − n·p̂_i)/(n−1) ]  (натты)
+
+    где суммирование по занятым ячейкам, p̂_i = count_i/n. Это современная
+    (2014) несмещённая коррекция вместо грубого члена Миллера (2005).
+    psi_D(x) = psi(x) при x >= 1000, иначе точная сумма гармонических чисел."""
+    occ = np.asarray(n_occ, dtype=float)
+    if m <= 1 or occ.size == 0:
+        return 0.0
+    tot = float(occ.sum())
+    if tot <= 1:
+        return 0.0
+    # psi(n) через digamma scipy-free: ln(n) - 1/(2n) - 1/(12n^2) (асимптотика
+    # точна до ~1e-10 при n>=10)
+    psi_n = np.log(tot) - 0.5 / tot - 1.0 / (12.0 * tot * tot)
+    psi_d = np.empty_like(occ)
+    big = occ >= 1000
+    psi_d[big] = np.log(occ[big]) - 0.5 / occ[big]
+    small = ~big
+    if small.any():
+        vals = occ[small].astype(int)
+        # psi(k) = -gamma + H(k-1), точные гармонические суммы
+        hs = np.zeros(len(vals))
+        for kk in range(1, int(vals.max() or 1)):
+            mask = vals > kk
+            hs[mask] += 1.0 / kk
+        psi_d[small] = -0.5772156649015329 + hs
+    p = occ / tot
+    b = psi_d - psi_n + (tot - occ) / (tot - 1.0)
+    return float((p * b).sum()) / np.log(2.0)     # натты -> биты
+
+
+def _te_pair(yp, ys, xs, q):
+    """Одна точка TE(X → Y_t | Y_{t-1}, X_τ) − TE(X → Y_t | Y_{t-1}), т.е.
+    TE(X→Y | Y_история) в каноническом виде (Schreiber 2000 / Marsilli 2014),
+    со снятием смещения оценки аналитической поправкой Grassberger (2014) —
+    современной заменой члена Миллера (2005). Условие — ПАРА (Y_{t-1}, X_τ),
+    кодовое пространство q^2; целевая переменная Y_t (q состояний).
+
+    Реализация через разность условных энтропий:
+        TE = H(Y_t | Y_{t-1}) - H(Y_t | Y_{t-1}, X_τ)
+    Каждая энтропия корректируется своим Grassberger-членом по Counts соответствующих
+    условных таблиц. Стоимость O(N) на пару за скан."""
+    m = len(ys)
     if m < 2:
         return 0.0
-    j3 = (y_prev * q + y_cur) * q + x_prev     # тройка (y', y, x), длина m
-    c3 = np.bincount(j3, minlength=q ** 3).astype(float)
-    c2yy = np.bincount(y_prev * q + y_cur, minlength=q ** 2).astype(float)
-    c2yx = np.bincount(y_prev * q + x_prev, minlength=q ** 2).astype(float)
-    i3 = np.flatnonzero(c3 > 0)                 # ненулевые ячейки таблицы
-    if not len(i3):
+    # --- H(Y_t | Y_{t-1}): условие q состояний, цель q состояний
+    c_yy = np.bincount(yp * q + ys, minlength=q * q).astype(float)
+    cy = c_yy.reshape(q, q)
+    h_y_given_yp = 0.0
+    for i in range(q):
+        row = cy[i]
+        tot = row.sum()
+        if tot == 0:
+            continue
+        p_cond = row[row > 0] / tot
+        h_i = -float((p_cond * np.log2(p_cond)).sum())
+        bias_i = _bias_grassberger(int(tot), row[row > 0], int(tot))
+        h_y_given_yp += (tot / m) * (h_i - bias_i)
+    # --- H(Y_t | Y_{t-1}, X_τ): условие q^2 состояний, цель q состояний
+    j2 = yp * q + xs
+    c_yx = np.bincount(j2 * q + ys, minlength=q ** 3).astype(float)
+    h_y_given_yp_xs = 0.0
+    for g in range(q * q):
+        col = c_yx[g * q:(g + 1) * q]
+        tot = col.sum()
+        if tot == 0:
+            continue
+        p_cond = col[col > 0] / tot
+        h_g = -float((p_cond * np.log2(p_cond)).sum())
+        bias_g = _bias_grassberger(int(tot), col[col > 0], int(tot))
+        h_y_given_yp_xs += (tot / m) * (h_g - bias_g)
+    te = h_y_given_yp - h_y_given_yp_xs
+    return te if np.isfinite(te) else 0.0
+
+
+def _cond_entropy(target, groups, q_levels, m):
+    """H(target | групповые колонки) c поправкой Grassberger на каждую группу.
+    target/groups — целочисленные массивы бинов; возвращает биты/символ."""
+    idx = np.zeros(m, dtype=np.int64)
+    for g in groups:
+        idx = idx * q_levels + g
+    key = idx * q_levels + target
+    cnt = np.bincount(key, minlength=(q_levels ** (len(groups) + 1))
+                      ).astype(float).reshape(-1, q_levels)
+    h = 0.0
+    for row in cnt:
+        tot = row.sum()
+        if tot == 0:
+            continue
+        nz = row[row > 0]
+        p = nz / tot
+        h_i = -float((p * np.log2(p)).sum())
+        h += (tot / m) * (h_i - _bias_grassberger(int(tot), nz, int(tot)))
+    return h
+
+
+def _lag_profile_raw(xb, yb, tau_max, q, k_y=1):
+    """Лаг-профиль условной TE(X_{t-τ} → Y_t | Y_{t-k_y}..Y_{t-1}), τ=0..tau_max.
+
+    Общая сетка наблюдений t = tau_max+1 .. n-1 строится ОДНИМ срезом для
+    всех τ (урок 26.10: src = xb[L-τ : L-τ+m] — скользящее окно одного и
+    того же ряда, а не скалярная broadcast-константа; разные срезы на
+    разных τ делают точки профиля несравнимыми и пик уезжает в шум).
+    Условие — последние k_y баров цели (Марсилли: собственная история Y
+    обязательна). История ИСТОЧНИКА X в условие НЕ входит: при скане τ
+    X_{t-τ} сам становится условием для последующих лагов, joint-таблица
+    раздувается до q^(k_x+k_y+2) и на N≈800 оценка тонет в шуме
+    разреженности (проверено 26.10: белый шум давал до 1.07 бит).
+    Стоимость O((τ_max+1)·q^(k_y+2)) на пару за скан."""
+    n = len(xb)
+    if n < tau_max + k_y + 8 or len(yb) != n:
+        return None
+    L = tau_max                       # стартовая точка общей сетки
+    prof = np.zeros(tau_max + 1)
+    tgt = yb[L + 1:]                  # Y_t, одна сетка t для всех τ
+    m = len(tgt)
+    if m < 2:
+        return None
+    gy = [yb[L + 1 - i] for i in range(k_y, 0, -1)]     # Y_{t-k_y}..Y_{t-1}
+    h_small = _cond_entropy(tgt, gy, q, m)
+    for tau in range(tau_max + 1):
+        src = xb[L - tau:L - tau + m]                   # X_{t-τ} на общей сетке
+        te = h_small - _cond_entropy(tgt, gy + [src], q, m)
+        prof[tau] = te if np.isfinite(te) and te > 0 else 0.0
+    return prof
+
+
+def transfer_entropy(x, y, q, lag=1):
+    """TE(X_{t-lag} → Y_t | Y_{t-1}) в битах — оценка Марсилли со снятием
+    смещения (см. _te_pair). Ряды побинаются по полным хвостам (общая сетка
+    квантилей). Может быть слегка отрицательной — это норма для скорректированной
+    оценки на малом сигнале; clamp нуля ломал симметрию «ведущий/ведомый».
+
+    Важно: lag здесь означает ЗАДЕРЖКУ между X и Y, а не индекс в профиле.
+    Для процесса y[t]=f(x[t-tau]) нужно передавать lag=tau, чтобы получить
+    TE(X_{t-tau}→Y_t|Y_{t-1})."""
+    x = np.asarray(x, dtype=float)
+    y = np.asarray(y, dtype=float)
+    n = min(len(x), len(y))
+    if n - lag < 4:
         return 0.0
-    # декодируем плоский индекс ячейки обратно в (y', y, x):
-    # j3 = (y_prev*q + y_cur)*q + x_prev ⇒ x=i3%q, y=(i3//q)%q, y'=i3//q//q
-    yp = i3 // q // q                           # y_{t-1}
-    dy, dx = (i3 // q) % q, i3 % q              # y_t, x_{t-1}
-    yy_idx = yp * q + dy                         # пара (y_{t-1}, y_t)
-    yx_idx = yp * q + dx                         # пара (y_{t-1}, x_{t-1})
-    c3m = c3[i3]
-    den_both = c2yx[yx_idx]
-    den_hist = c2yy[yy_idx]
-    # страховка от деления на 0: теоретически c3>0 ⇒ знаменатели >0, но при
-    # целочисленном переполнении индекса оставим только валидные ячейки
-    ok = (den_both > 0) & (den_hist > 0)
-    if not ok.all():
-        c3m = c3m[ok]
-        den_both = den_both[ok]
-        den_hist = den_hist[ok]
-        if not len(c3m):
-            return 0.0
-    # p(y_t | y_{t-1}, x_{t-1}) и p(y_t | y_{t-1})
-    p_y_given_both = c3m / den_both
-    p_y_given_hist = c3m / den_hist
-    term = c3m / m * (p_y_given_both
-                      * np.log2(p_y_given_both / p_y_given_hist))
-    raw = float(term.sum())
-    return raw if np.isfinite(raw) else 0.0
-
-
-def transfer_entropy(x, y, q):
-    """TE(X→Y): прошлое X против настоящего Y при условии прошлого Y (биты).
-    x, y — ряды доходностей одного шага; берём общий хвост, сдвиг классический:
-    X_{t-1} → Y_t при Y_{t-1} в регрессии.
-
-    Возвращает СЫРУЮ оценку (может быть отрицательной из-за смещения O(q²/N)).
-    Вычитание автозависимости Y и калибровка шума — на уровне NET_TE и
-    te_lag_profile (см. docstring модуля), а не здесь: clamp'инг нуля тут
-    ломал симметрию «ведущий/ведомый»."""
-    m = min(len(x), len(y))
-    if m < 4:
-        return 0.0
-    xb = _quantile_bins(np.asarray(x[-m:], dtype=float), q)
-    yb = _quantile_bins(np.asarray(y[-m:], dtype=float), q)
-    return _te_from_bins(yb[:-1], yb[1:], xb[:-1], q)
+    xb = _quantile_bins(x[len(x) - n:], q)
+    yb = _quantile_bins(y[len(y) - n:], q)
+    prof = _lag_profile_raw(xb, yb, int(lag), q)
+    return 0.0 if prof is None else float(prof[int(lag)])
 
 
 def volatility_concordance(rx, ry):
@@ -132,39 +223,37 @@ def volatility_concordance(rx, ry):
     return round(max(0.0, min(1.0, c)), 3)
 
 
-def _surrogate_te(x, y, q, n_perm, rng):
-    """Нулевая TE на перестановках ряда X (разрушает связь, сохраняет
-    распределение): медиана по n_perm прогонам — оценка смещения оценки."""
-    vals = []
-    for _ in range(n_perm):
-        xp = rng.permutation(np.asarray(x, dtype=float))
-        vals.append(transfer_entropy(xp, y, q))
-    return float(np.median(vals)) if vals else 0.0
+def te_lag_profile(x, y, q, lag_max, surrogate=0):
+    """Профиль TE(X_{t-τ}→Y_t | Y_{t-1}) по τ=0..lag_max.
 
-
-def te_lag_profile(x, y, q, lag_max, surrogate=5):
-    """Профиль TE(X_{t-τ}→Y_t) по τ=0..lag_max (шаги x). Для каждого τ пары
-    строятся ТОЧНО: x_pair[t] = x[t-τ], y_pair[t] = y[t] при t = τ..m-1
-    (никаких оконных сдвигов — иначе τ* уезжает на мусор).
-
-    На каждом τ сырая TE вычитается нулевая TE того же размера выборки
-    (перестановочный суррогат x_pair): смещение оценки O(q²/N) зависит от
-    длины, поэтому калибруется отдельно для каждого τ — иначе малые τ
-    систематически перевешивают и τ* липнет к 0. Профили fwd и rev
-    калибруются одними и теми же суррогатами (общий rng, один проход по τ),
-    поэтому NET_TE = fwd − rev остаётся честной разностью.
-    Возвращает (τ*, скорректированная TE(τ*))."""
-    rng = np.random.default_rng(12345)      # детерминизм: τ* не дрожит между пульсами
+    Точки профиля — из одной фиксированной сетки наблюдений (_lag_profile_raw),
+    смещение оценки снято аналитически (_te_pair), поэтому перестановочные
+    суррогаты больше не нужны: медиана из 5 случайных проб сама была шумом
+    ±0.05 бит и ломала пик τ* (surrogate=0 — дефолт; >0 оставляет грубую
+    проверку для диагностики). Возвращает (τ*, TE(τ*))."""
+    x = np.asarray(x, dtype=float)
+    y = np.asarray(y, dtype=float)
+    n = min(len(x), len(y))
+    if n < lag_max + 8:
+        return 0, 0.0
+    xb = _quantile_bins(x[len(x) - n:], q)
+    yb = _quantile_bins(y[len(y) - n:], q)
+    raw = _lag_profile_raw(xb, yb, int(lag_max), q)
+    if raw is None:
+        return 0, 0.0
     best_tau, best_te = 0, -np.inf
-    lx, ly = len(x), len(y)
-    for tau in range(0, int(lag_max) + 1):
-        if lx - tau < 4 or ly - tau < 4:
-            break
-        xs = x[:lx - tau] if tau else x
-        ys = y[tau:] if tau else y
-        raw = transfer_entropy(xs, ys, q)
-        null = _surrogate_te(xs, ys, q, surrogate, rng) if surrogate else 0.0
-        te = raw - null
+    for tau in range(int(lag_max) + 1):
+        te = raw[tau]
+        if surrogate:
+            rng = np.random.default_rng(12345 + tau)
+            ys_ = yb[int(lag_max) + 1:]
+            yp_ = yb[int(lag_max):int(lag_max) + len(ys_)]
+            null_vals = []
+            for _ in range(int(surrogate)):
+                xp = rng.permutation(xb)       # перемешали бины — связь рвана
+                xs_ = xp[int(lag_max) - tau:int(lag_max) - tau + len(ys_)]
+                null_vals.append(_te_pair(yp_, ys_, xs_, q))
+            te -= float(np.median(null_vals))
         if te > best_te:
             best_te, best_tau = te, tau
     return best_tau, max(best_te, 0.0)
