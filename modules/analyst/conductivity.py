@@ -27,18 +27,24 @@
 
 СВЯЗЬ С ПОЛОТНОМ 13 ЭТАЖЕЙ («погода ↔ полотно», утверждено):
 - ФРАКТАЛЬНЫЙ КОНТЕКСТ УПРЯМСТВА: k_ctx = 1 − ctx_strength·(d·G), где
-  d — знак локального хода цены, G — ветер старших этажей (среднее
-  g_trend из карточек G-Канала Регрессии, 5м…3д, свежесть senior_ttl).
+  d — знак локального хода цены, G — ветер старших этажей. Согласован-
+  ность вместо голосовалки (канон 27.10, по образцу cross_tf): каждый
+  этаж голосует ТРОИЧНЫМ знаком g_trend (−1/0/+1, мёртвая зона
+  g_dead_zone — «этаж не видит тренда» — воздерживается); G = сумма
+  знаков / число ГОЛОСОВАВШИХ этажей. Совпали все → |G|=1 (полный
+  шторм контекста), разошлись → |G|<1 (частичное согласие слабее),
+  согласных нет → G=0 (контекст молчит, а не врёт нулём среднего).
   Против ветра (d·G=−1) — ×1.5: толпа ловит против тайфуна — другая
-  физика; по ветру — ×0.5: трендовый гул; ветра нет — ×1 (прежнее
+  физика; по ветру — ×0.5: трендовый гул; согласия нет — ×1 (прежнее
   поведение, обратная совместимость).
 - КИНЕТИЧЕСКАЯ ВЕРИФИКАЦИЯ ИМПУЛЬСА: v = b × Â — перекос ленты × знак-
   консенсус ускорений старших этажей (кинетика Регрессии ТОЛЬКО по
-  закрытым барам). k_impulse = 1 + r·(1 + impulse_confirm·v): под-
-  тверждено старшими — до 1.5·r (у потолка 2.0), вразрез — 0.5·r:
+  закрытым барам). Â — та же механика согласованности по знакам уско-
+  рений (±accel_dead_zone). k_impulse = 1 + r·(1 + impulse_confirm·v):
+  подтверждено старшими — до 1.5·r (у потолка 2.0), вразрез — 0.5·r:
   ложный вынос гасится к нейтрали, но не ниже 1.0 (потребители читают
   через max(1.0, …) — иначе гашение вырезалось бы ими молча). Числа
-  старших живут senior_ttl_sec; данных нет — оба множителя равны 1.
+  старших живут senior_fresh_sec; данных нет — оба множителя равны 1.
 
 R сглаживается экспоненциально — «плавно меняет веса». Полки гаснут
 с силой, обратной их возрасту (глубокие полки шторм не выметает) —
@@ -82,10 +88,17 @@ class Conductivity(NeirModule):
         # СВЯЗЬ С ПОЛОТНОМ (утверждено)
         self.ctx_strength = c.cond_ctx_strength
         self.impulse_confirm = c.cond_impulse_confirm
-        self.senior_ttl = c.cond_senior_ttl_sec
+        self.senior_fresh = c.cond_senior_fresh_sec
+        # СОГЛАСОВАННОСТЬ (канон 27.10): мёртвые зоны знака — «этаж не
+        # видит движения» воздерживается, а не размывает консенсус нулём.
+        self.g_dead_zone = c.cond_g_dead_zone
+        self.accel_dead_zone = c.cond_accel_dead_zone
+        self.trend_z_scale = c.cond_trend_z_scale
+        self.impulse_min = c.cond_impulse_min
         self.base_tf = min(EXCHANGE_SPECTRUM)   # базовый этаж полотна (1м)
         self.storm_liq_min = c.cond_storm_liq_min
         self.storm_oi_min = c.cond_storm_oi_min
+        self.errors = 0                          # сбойные карточки — в счётчик
 
         self._liqs = collections.deque()          # (ts, qty)
         self._oi_marks = collections.deque()      # (ts, oi) — снимки Каскада
@@ -121,12 +134,24 @@ class Conductivity(NeirModule):
                       1 - 0.9 * self._r_smooth,
                       self._k_impulse(min(1.0, self._r_smooth), v))
 
+    def _fail(self, what, exc):
+        """Сбой приёма факта — в журнал с трассировкой, не в молчание
+        (паттерн meta_corr/fractal, аудит 27.10)."""
+        self.errors += 1
+        self.log.error("Проводимость: %s: %s: %s", what,
+                       type(exc).__name__, exc, exc_info=True)
+
     # ---------- приём фактов ----------
 
     async def _on_liq(self, env):
         p = env.payload
         now = time.time()
-        self._liqs.append((now, float(p.get("qty", 0.0))))
+        try:
+            qty = float(p.get("qty", 0.0))
+        except (TypeError, ValueError) as exc:
+            self._fail("ликвидация без честного qty", exc)
+            return
+        self._liqs.append((now, qty))
         edge = now - self.liq_window
         while self._liqs and self._liqs[0][0] < edge:
             self._liqs.popleft()
@@ -136,7 +161,8 @@ class Conductivity(NeirModule):
         try:
             oi = float(p["oi"])
             ts = int(p["ts_ms"]) / 1000.0
-        except (KeyError, TypeError, ValueError):
+        except (KeyError, TypeError, ValueError) as exc:
+            self._fail("снимок OI бракованный", exc)
             return
         if oi <= 0:
             return
@@ -147,7 +173,11 @@ class Conductivity(NeirModule):
 
     async def _on_price(self, env):
         p = env.payload
-        price = float(p.get("price", 0.0))
+        try:
+            price = float(p.get("price", 0.0))
+        except (TypeError, ValueError) as exc:
+            self._fail("тик цены бракованный", exc)
+            return
         if price <= 0:
             return
         now = time.time()
@@ -160,13 +190,18 @@ class Conductivity(NeirModule):
         card = env.payload
         kind = card.get("kind")
         f = card.get("fields") or {}
-        created = float(card.get("created_ms", 0) or 0)
+        try:
+            created = float(card.get("created_ms", 0) or 0)
+        except (TypeError, ValueError) as exc:
+            self._fail("карточка %s без честного created_ms" % kind, exc)
+            return
         if kind == "g-trend":
             # ВЕТЕР СТАРШИХ ЭТАЖЕЙ (связь с полотном): G-Канал Регрессии
             try:
                 tf = int(f.get("tf_sec", 0))
                 gt = float(f.get("g_trend", 0))
-            except (TypeError, ValueError):
+            except (TypeError, ValueError) as exc:
+                self._fail("карточка g-trend бракованная", exc)
                 return
             if tf > self.base_tf:
                 self._senior_gt[tf] = (gt, created)
@@ -175,13 +210,16 @@ class Conductivity(NeirModule):
             # КИНЕТИКА СТАРШИХ ЭТАЖЕЙ: ускорение (только закрытые бары)
             try:
                 tf = int(f.get("tf_sec", 0))
-            except (TypeError, ValueError):
+            except (TypeError, ValueError) as exc:
+                self._fail("карточка trend-vector бракованная", exc)
                 return
             if tf > self.base_tf:
                 acc = f.get("acceleration")
                 try:
                     acc = None if acc is None else float(acc)
-                except (TypeError, ValueError):
+                except (TypeError, ValueError) as exc:
+                    self._fail("trend-vector tf=%s: acceleration не число"
+                               " — берём None (этаж воздержится)" % tf, exc)
                     acc = None
                 self._senior_acc[tf] = (acc, created)
             return
@@ -194,30 +232,53 @@ class Conductivity(NeirModule):
                 "ts_ms": int(card.get("created_ms", 0)),
                 "seq": card.get("seq"),      # указатель в журнал — для lineage
             }
-        except (TypeError, ValueError):
+        except (TypeError, ValueError) as exc:
+            self._fail("карточка flow-state бракованная", exc)
             return
 
     # ---------- связь с полотном (утверждено, узел 8) ----------
 
-    def _wind(self):
-        """Ветер старших этажей G ∈ −1..1: среднее g_trend по свежим
-        карточкам G-Канала старших этажей (5м…3д). Свежих нет — 0."""
+    def _concordance(self, values, dead_zone):
+        """Механика СОГЛАСОВАННОСТИ (канон 27.10, по образцу кросс-ТФ):
+        каждый этаж даёт ТРОИЧНЫЙ знак (−1/0/+1); |x| ≤ dead_zone —
+        воздержание («этаж не видит»), а не ноль-голос, размазывающий
+        консенсус. Выход — (C ∈ −1..1, n_votes): сумма знаков / число
+        ГОЛОСОВАВШИХ. Все согласны → |C|=1; разошлись → |C|<1 (частичное
+        согласие слабее полного — это измерение согласия, а не усредне-
+        ние величин); голосов нет → (0.0, 0) — контекст молчит честно."""
+        votes = [1.0 if v > dead_zone else -1.0 for v in values
+                 if abs(v) > dead_zone]
+        if not votes:
+            return 0.0, 0
+        return sum(votes) / len(votes), len(votes)
+
+    def _wind_full(self):
+        """Ветер старших этажей: (G, n_senior, n_votes) по свежим карточ-
+        кам g_trend (свежесть senior_fresh_sec). Согласованность знаков
+        вместо среднего величин: послойная информация не сплющивается."""
         now_ms = time.time() * 1000.0
-        vals = [gt for gt, ts in self._senior_gt.values()
-                if now_ms - ts <= self.senior_ttl * 1000.0]
-        return sum(vals) / len(vals) if vals else 0.0
+        fresh = [gt for gt, ts in self._senior_gt.values()
+                 if now_ms - ts <= self.senior_fresh * 1000.0]
+        g, n_votes = self._concordance(fresh, self.g_dead_zone)
+        return g, len(fresh), n_votes
+
+    def _wind(self):
+        """Ветер G ∈ −1..1 (скалярное чтение для k_ctx)."""
+        return self._wind_full()[0]
+
+    def _accel_wind_full(self):
+        """Кинетика старших Â: (Â, n_senior, n_votes) по свежим trend-
+        vector (регрессия считает кинетику только по закрытым барам).
+        У этажа нет кинетики (None) — не участвует; знак — та же согла-
+        сованность с мёртвой зоной accel_dead_zone."""
+        now_ms = time.time() * 1000.0
+        accs = [acc for acc, ts in self._senior_acc.values()
+                if acc is not None and now_ms - ts <= self.senior_fresh * 1000.0]
+        return self._concordance(accs, self.accel_dead_zone) + (len(accs),)
 
     def _accel_wind(self):
-        """Кинетика старших Â ∈ −1..1: среднее знака ускорения по свежим
-        trend-vector (регрессия считает кинетику только по закрытым барам).
-        У этажа нет кинетики — не голосует; нет данных — 0."""
-        now_ms = time.time() * 1000.0
-        vals = []
-        for acc, ts in self._senior_acc.values():
-            if now_ms - ts > self.senior_ttl * 1000.0 or acc is None:
-                continue
-            vals.append(1.0 if acc > 0 else (-1.0 if acc < 0 else 0.0))
-        return sum(vals) / len(vals) if vals else 0.0
+        """Кинетика Â ∈ −1..1 (скалярное чтение для v)."""
+        return self._accel_wind_full()[0]
 
     def _kinetic_v(self, speed_bias):
         """Кинетическая верификация импульса: v = b × Â ∈ −1..1 —
@@ -267,21 +328,31 @@ class Conductivity(NeirModule):
 
     def _component_impulse(self):
         """Свежесть импульса: наклон CVD (факт Потока) + наклон линзы
-        в масштабе price_hist_sec (зашитая «60» убрана, узел 8)."""
-        parts = []
+        в масштабе price_hist_sec (зашитая «60» убрана, узел 8).
+
+        СОГЛАСОВАННОСТЬ вместо среднего величин (канон 27.10): источник
+        даёт знак |наклона| (сильный импульс есть / нет), а не величину
+        на двоих. Один источник — полное согласие (|C|=1); два совпали —
+          1; разошлись — 0 («импульс видят, но куда — неизвестно», это
+        честное измерение несогласия, а не половинка среднего); один из
+        двух молчит — 0.5. Величины наклонов живут отдельными осями
+        (cvd_slope/trend_z у источников), здесь — только согласие."""
+        signs = []
         fresh = (self._flow is not None
                  and time.time() * 1000 - self._flow["ts_ms"]
                  < self.flow_ttl * 1000)
         if fresh:
-            parts.append(min(1.0, abs(self._flow["cvd_slope"])))
+            signs.append(1.0 if abs(self._flow["cvd_slope"]) >= self.impulse_min
+                         else 0.0)
         env = self.get_last(SURFACE)
         if env is not None:
             lens = surface_read(env.payload, self.price_hist)
             if lens:
-                parts.append(min(1.0, abs(lens.get("trend_z", 0.0)) / 1.5))
-        if not parts:
+                trend_norm = abs(lens.get("trend_z", 0.0)) / self.trend_z_scale
+                signs.append(1.0 if trend_norm >= self.impulse_min else 0.0)
+        if not signs:
             return 0.0
-        return min(1.0, sum(parts) / len(parts))
+        return min(1.0, sum(signs) / len(signs))
 
     def _component_oi_trend(self):
         """Направление ΔOI: −1..1 (растёт/падает), в нормах stubborn_oi.
@@ -295,23 +366,32 @@ class Conductivity(NeirModule):
         d_oi = (oi1 - oi0) / oi0 * 100.0
         return max(-1.0, min(1.0, d_oi / max(1e-9, self.stubborn_oi)))
 
-    def _component_speed_bias(self):
-        """Перекос ленты: −1..1 (продавцы давят / покупатели давят)."""
-        parts = []
+    def _component_speed_bias_full(self):
+        """Перекос ленты: (B ∈ −1..1, n_src, n_votes) — СОГЛАСОВАННОСТЬ
+        вместо среднего величин (канон 27.10): каждый свежий источник
+        (Поток CVD / линза trend_z) даёт знак перекоса; |значение| в
+        мёртвой зоне g_dead_zone — «источник не видит давления» — воз-
+        держивается. Два совпали → ±1; разошлись → 0 (честное измерение
+        несогласия); один молчит → ±1 с меткой 1/1. Величины наклонов
+        живут отдельными осями у источников, здесь — только согласие."""
+        vals = []
         fresh = (self._flow is not None
                  and time.time() * 1000 - self._flow["ts_ms"]
                  < self.flow_ttl * 1000)
         if fresh:
-            parts.append(max(-1.0, min(1.0, self._flow["cvd_slope"])))
+            vals.append(max(-1.0, min(1.0, self._flow["cvd_slope"])))
         env = self.get_last(SURFACE)
         if env is not None:
             lens = surface_read(env.payload, self.price_hist)
             if lens:
-                parts.append(max(-1.0, min(1.0,
-                            lens.get("trend_z", 0.0) / 1.5)))
-        if not parts:
-            return 0.0
-        return sum(parts) / len(parts)
+                vals.append(max(-1.0, min(1.0,
+                            lens.get("trend_z", 0.0) / self.trend_z_scale)))
+        b, n_votes = self._concordance(vals, self.g_dead_zone)
+        return b, len(vals), n_votes
+
+    def _component_speed_bias(self):
+        """Перекос ленты B ∈ −1..1 (скалярное чтение для v/k_impulse)."""
+        return self._component_speed_bias_full()[0]
 
     def _phase(self, liq_state, oi_trend):
         """Фаза среды: шторм-пробой / шторм-вынос / штиль (пороги в config)."""
@@ -380,10 +460,16 @@ class Conductivity(NeirModule):
             # Вектор живых условий (ИЗМЕРЕНИЯ, ноль голосования)
             liq_state = round(p, 3)
             oi_trend = round(self._component_oi_trend(), 3)
-            speed_bias = round(self._component_speed_bias(), 3)
+            # МЕТКИ СОГЛАСОВАННОСТИ (n_senior/n_votes) — данные не сплющи-
+            # ваются: видно, сколькими этажами/источниками подтверждён знак.
+            wind_g, wind_n, wind_votes = self._wind_full()
+            acc_a, acc_n, acc_votes = self._accel_wind_full()
+            bias_b, bias_n, bias_votes = self._component_speed_bias_full()
+            speed_bias = round(bias_b, 3)
             # КИНЕТИЧЕСКАЯ ВЕРИФИКАЦИЯ (утверждено): импульс проверяется
             # ускорением старших этажей — вразрез гасится к нейтрали.
-            k_impulse = self._k_impulse(r, self._kinetic_v(speed_bias))
+            k_impulse = self._k_impulse(r, max(-1.0, min(1.0,
+                                             speed_bias * acc_a)))
             phase = self._phase(liq_state, oi_trend)
             # Матрица селективной громкости: {kind: множитель} из config.ini
             efficiency = (self.kernel.cfg.efficiency_matrix(phase)
@@ -399,6 +485,16 @@ class Conductivity(NeirModule):
                                "impulse": round(i, 3)},
                 "conditions": {"liq_state": liq_state, "oi_trend": oi_trend,
                                "speed_bias": speed_bias},
+                # Согласованность (не усреднение): знак + «сколькими
+                # голосующими подтверждён» — consumer видит полноту.
+                "concordance": {"g": round(wind_g, 3),
+                                "g_n_senior": wind_n, "g_n_votes": wind_votes,
+                                "accel": round(acc_a, 3),
+                                "accel_n_senior": acc_n,
+                                "accel_n_votes": acc_votes,
+                                "bias": round(bias_b, 3),
+                                "bias_n_src": bias_n,
+                                "bias_n_votes": bias_votes},
                 "phase": phase,
                 "efficiency": efficiency,
             }, ttl=max(10.0, self.publish_every * 4))
@@ -424,6 +520,12 @@ class Conductivity(NeirModule):
                         "liq_state": liq_state,
                         "oi_trend": oi_trend,
                         "speed_bias": speed_bias,
+                        # оси согласованности (знак, этажей, голосов)
+                        "g_wind": round(wind_g, 3),
+                        "g_senior_n": wind_n, "g_votes_n": wind_votes,
+                        "a_wind": round(acc_a, 3),
+                        "a_senior_n": acc_n, "a_votes_n": acc_votes,
+                        "b_votes_n": bias_votes, "b_src_n": bias_n,
                     },
                     "lineage": self._lineage(),
                 })

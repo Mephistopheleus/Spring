@@ -145,7 +145,14 @@ DEFAULTS = {
         # k_impulse = 1 + r·(1 + impulse_confirm·v) — кинетическая верификация.
         "ctx_strength": "0.5",       # сила контекста: ×1.5 против ветра / ×0.5 по ветру
         "impulse_confirm": "0.5",    # сила верификации: до ×1.5 / ×0.5 на r
-        "senior_ttl_sec": "600",     # свежесть g_trend/acceleration старших этажей
+        "senior_fresh_sec": "600",   # свежесть g_trend/acceleration старших этажей
+        # СОГЛАСОВАННОСТЬ ЭТАЖЕЙ (вместо усреднения-голосовалки):
+        # знак этажа с |значение| < dead_zone — «этаж не видит» — воздерживается,
+        # а не размазывает консенсус нулём. G = сумма знаков / число голосовавших.
+        "g_dead_zone": "0.15",       # мёртвая зона знака тренда g_trend
+        "accel_dead_zone": "0.05",   # мёртвая зона знака ускорения
+        "trend_z_scale": "1.5",      # нормировка trend_z линзы (кламп ±3 / 2)
+        "impulse_min": "0.5",        # порог «источник видит сильный импульс»
     },
     "regression": {
         "window": "60",           # окно регрессии, свечей
@@ -244,6 +251,10 @@ DEFAULTS = {
         "trend_weight": "0.20",
         "tape_speed_weight": "0",
         "magnets_dist_k": "4.0",
+        # СВЕЖЕСТЬ фактов (вместо зашитых TTL в теле Сценариста):
+        "spring_fact_fresh_sec": "120",
+        "intuit_fact_fresh_sec": "60",
+        "fractal_fact_fresh_sec": "120",
     },
     "risk": {
         "max_margin_total_pct": "65",
@@ -1020,10 +1031,32 @@ class KernelConfig:
         return min(1.0, max(0.0, self.get_float("conductivity", "impulse_confirm", 0.5)))
 
     @property
-    def cond_senior_ttl_sec(self) -> float:
+    def cond_senior_fresh_sec(self) -> float:
         """Свежесть чисел старших этажей полотна (g_trend/acceleration), сек.
         Дефолт 600 = 2× сердцебиения Регрессии (300)."""
-        return max(30.0, self.get_float("conductivity", "senior_ttl_sec", 600.0))
+        return max(30.0, self.get_float("conductivity", "senior_fresh_sec", 600.0))
+
+    @property
+    def cond_g_dead_zone(self) -> float:
+        """Мёртвая зона знака g_trend: |значение| ниже — этаж «не видит тренда»
+        и воздерживается в согласованности (не размазывает консенсус нулём)."""
+        return min(1.0, max(0.0, self.get_float("conductivity", "g_dead_zone", 0.15)))
+
+    @property
+    def cond_accel_dead_zone(self) -> float:
+        """Мёртвая зона знака ускорения старших этажей (согласованность k_impulse)."""
+        return min(1.0, max(0.0, self.get_float("conductivity", "accel_dead_zone", 0.05)))
+
+    @property
+    def cond_trend_z_scale(self) -> float:
+        """Масштаб нормировки trend_z линзы в импульсе (кламп ±3 → единица).
+        Раньше был зашитый /1.5 в теле метода."""
+        return max(0.1, self.get_float("conductivity", "trend_z_scale", 1.5))
+
+    @property
+    def cond_impulse_min(self) -> float:
+        """Порог «источник видит сильный импульс» для знака согласованности."""
+        return min(1.0, max(0.0, self.get_float("conductivity", "impulse_min", 0.5)))
 
     # ---------- сценарист ----------
 
@@ -1375,6 +1408,24 @@ class KernelConfig:
     def spring_publish_sec(self) -> float:
         """Период публикации карточки пружины (сек)."""
         return self.get_float("spring", "publish_sec", 20)
+
+    # ---------- свежесть фактов у Сценариста (канон: не TTL-заглушки
+    # в теле модуля, а ручки *_fresh_sec; аудит 27.10) ----------
+
+    @property
+    def spring_fact_fresh_sec(self) -> float:
+        """Окно свежести карточки Пружины для вклада в направление."""
+        return max(1.0, self.get_float("scenario", "spring_fact_fresh_sec", 120.0))
+
+    @property
+    def intuit_fact_fresh_sec(self) -> float:
+        """Окно свежести карточки Интуита (аналогии) для вклада."""
+        return max(1.0, self.get_float("scenario", "intuit_fact_fresh_sec", 60.0))
+
+    @property
+    def fractal_fact_fresh_sec(self) -> float:
+        """Окно свежести карточки Фракталов (резонанс/самоподобие)."""
+        return max(1.0, self.get_float("scenario", "fractal_fact_fresh_sec", 120.0))
 
     # ---------- Новости 2.0 (Этап 31) ----------
 
