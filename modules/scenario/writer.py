@@ -230,6 +230,11 @@ class ScenarioWriter(NeirModule):
         self._topo_weight = None
         # Пружина (Этап 32): растяжение от VWAP-якоря + затухание OI
         self.spring_w = self.kernel.cfg.spring_weight
+        # СВЕЖЕСТЬ фактов (канон вместо зашитых TTL 120_000/60_000 мс):
+        # просроченный факт — вклад «stale», свежий — «fresh» (аудит 27.10).
+        self.spring_fresh_ms = self.kernel.cfg.spring_fact_fresh_sec * 1000.0
+        self.intuit_fresh_ms = self.kernel.cfg.intuit_fact_fresh_sec * 1000.0
+        self.fractal_fresh_ms = self.kernel.cfg.fractal_fact_fresh_sec * 1000.0
         self._spring = None
         # Фракталы 2.0 (Этап 32): полное самоподобие слоёв
         self.selfsim_w = self.kernel.cfg.fractal_selfsim_weight
@@ -1193,7 +1198,7 @@ class ScenarioWriter(NeirModule):
         # Пружина (Этап 32): цена улетела от VWAP-якоря, OI гаснет —
         # толпа без бензина, возврат к руслу. Свежий факт.
         if (self._spring
-                and now_ms - int(self._spring.get("ts_ms", 0)) < 120_000):
+                and now_ms - int(self._spring.get("ts_ms", 0)) < self.spring_fresh_ms):
             try:
                 sp = float(self._spring.get("force", 0.0))
                 if sp:
@@ -1373,7 +1378,7 @@ class ScenarioWriter(NeirModule):
         # Интуит (утверждено): аналогии — факт, вклад по весу карточки
         # (стартовое доверие 0.2 → вес ~0.36 → вклад тихий, зарабатывает)
         if (self._intuit
-                and now_ms - int(self._intuit.get("ts_ms", 0)) < 60_000):
+                and now_ms - int(self._intuit.get("ts_ms", 0)) < self.intuit_fresh_ms):
             try:
                 hb = max(-1.0, min(1.0, float(self._intuit.get("bias", 0.0))))
                 scale = max(0.1, min(1.0, self._intuit_weight / 0.9))
@@ -1402,7 +1407,7 @@ class ScenarioWriter(NeirModule):
         # Фракталы (утверждено): инерция старших слоёв — факт направления
         topo_f = None
         if (self._topo and (now_ms - int(self._topo.get("ts_ms", 0))
-                            < 120_000)):
+                            < self.fractal_fresh_ms)):
             topo_f = self._topo
             topo_age = (now_ms - int(topo_f.get("ts_ms", 0))) / 1000.0
             try:
