@@ -222,7 +222,6 @@ class ScenarioWriter(NeirModule):
         self._intuit = None
         self._intuit_weight = None
         # Фракталы (утверждено): Херст + резонансные узлы
-        self.fractal_bias_w = self.kernel.cfg.fractal_bias_weight
         self.fractal_hurst_penalty = self.kernel.cfg.fractal_hurst_penalty
         self.fractal_node_prox = self.kernel.cfg.fractal_node_prox_pct
         self.fractal_node_ttl = self.kernel.cfg.fractal_node_ttl_factor
@@ -982,7 +981,6 @@ class ScenarioWriter(NeirModule):
         self.rsi_w = c.rsi_weight
         self.oi_w = c.scenario_oi_weight
         self.meta_weight = c.meta_weight
-        self.fractal_bias_w = c.fractal_bias_weight
         self.intuit_w = c.intuit_weight
         self.spring_w = c.spring_weight
         # фильтр хода — из живого конфига (ручка net_margin)
@@ -1404,24 +1402,26 @@ class ScenarioWriter(NeirModule):
                age_sec=(now_ms - int(self._intuit.get("ts_ms", 0))) / 1000.0,
                state="stale",
                trust=float(getattr(self, "_intuit_trust", 0.2) or 0.2))
-        # Фракталы (утверждено): инерция старших слоёв — факт направления
-        topo_f = None
-        if (self._topo and (now_ms - int(self._topo.get("ts_ms", 0))
-                            < self.fractal_fresh_ms)):
-            topo_f = self._topo
+        # ФРАКТАЛЬНЫЕ НАКЛОНЫ: ВЕТКА ВЫРЕЗАНА (27.10, решение хозяина).
+        # Здесь жили две голосовалки подряд: мёртвый скаляр fractal_bias
+        # (вырезан из Фракталов 20.10; get(..., 0.0) молча давал ноль) и
+        # моя первая замена sum(знаки)/n_votes — тоже усреднение. Удалены
+        # обе. Истина: наклон КАЖДОГО кольца — отдельная ось trend_slope_{tf}
+        # в карточке, она уже едет в матрицу (Склад-матрица хранит значения
+        # как есть, не сплющивая) и в слепок вектора момента. Сценарист
+        # здесь ничего не считает и в bias не добавляет: направление по
+        # задумке берётся из дерева прогнозов Матрицы (узел 6), а не из
+        # полей одной карточки.
+        topo_f = self._topo if (self._topo and (now_ms - int(
+            self._topo.get("ts_ms", 0)) < self.fractal_fresh_ms)) else None
+        if topo_f is not None:
             topo_age = (now_ms - int(topo_f.get("ts_ms", 0))) / 1000.0
-            try:
-                fb = float(topo_f.get("fractal_bias", 0.0) or 0.0)
-                if fb is not None and fb != 0.0:
-                    bias += self.fractal_bias_w * fb
-                    facts["fractal"] = round(fb, 3)
-                _n("fractal", kind="topological-resonance", value=fb,
-                   weight=self.fractal_bias_w,
-                   push=self.fractal_bias_w * fb if fb else 0.0,
-                   age_sec=topo_age, state="fresh",
-                   trust=float(getattr(self, "_topo_trust", 0.5) or 0.5))
-            except (TypeError, ValueError):
-                topo_f = None
+            _n("fractal", kind="topological-slopes",
+               value=None,                       # скаляра нет — и не будет
+               weight=0.0, push=0.0, age_sec=topo_age, state="fresh",
+               trust=float(getattr(self, "_topo_trust", 0.5) or 0.5),
+               extra={"slopes": {tf: topo_f.get(f"trend_slope_{tf}")
+                                 for tf in FRACT_TFS}})
             # Фракталы 2.0 (Этап 32): полное самоподобие — младший слой
             # повторяет форму старшего, ход старшего продолжается в младшем
             try:
